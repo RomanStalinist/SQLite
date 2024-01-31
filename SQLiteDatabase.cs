@@ -3,20 +3,158 @@ using System.Data;
 using System.Diagnostics;
 using System.Collections;
 using Microsoft.Data.Sqlite;
+using System.Security.Cryptography.X509Certificates;
 
 #pragma warning disable IDE1006
 
 namespace database.sqlite
 {
+    public enum SQLiteOpenMode
+    {
+        OPEN_READWRITECREATE = 0,
+        OPEN_READWRITE = 1,
+        OPEN_READONLY = 2,
+        OPEN_MEMORY = 3
+    }
+
+    public class Cursor
+    {
+        public static int position = -1;
+        private static SqliteDataReader _reader = null!;
+        private static string _databaseName = string.Empty;
+        private static SqliteConnection _connection = null!;
+        public static implicit operator Cursor(SqliteDataReader reader) => new(reader);
+
+        public Cursor(SqliteDataReader reader)
+        {
+            _reader = reader;
+        }
+
+        public Cursor(SqliteConnection conn, SqliteDataReader reader)
+        {
+            _reader = reader;
+            _connection = conn;
+        }
+
+        public Cursor(SqliteConnection conn, SqliteCommand com)
+        {
+            _connection = conn;
+            _reader = com.ExecuteReader();
+        }
+
+        public Cursor(string dbName, SqliteConnection conn, SqliteCommand com)
+        {
+            _connection = conn;
+            _databaseName = dbName;
+            _reader = com.ExecuteReader();
+        }
+
+        public bool moveToFirst()
+        {
+            position = 0;
+            return true;
+        }
+
+        public bool moveToPosition(int offset)
+        {
+            if (offset <= 0 || offset >= getCount())
+                throw new ArgumentOutOfRangeException(nameof(_reader.FieldCount), "Field count out of range");
+
+            position = offset;
+            return true;
+        }
+
+        public bool moveToLast()
+        {
+            if (_reader.FieldCount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(_reader.FieldCount), "Field count <= 0");
+
+            position = getCount() - 1;
+            return true;
+        }
+
+        public bool moveToNext()
+        {
+            position++;
+            return read();
+        }
+
+        public Cursor MoveToPrevious()
+        {
+            if (_reader.FieldCount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(_reader.FieldCount), "Field count <= 0");
+
+            position--;
+            return this;
+        }
+
+        public void close() => _reader.Close();
+
+        public int getColumnCount() => _reader.FieldCount;
+
+        public int getColumnIndex(string columnName) => _reader.GetOrdinal(columnName);
+
+        public string getColumnName(int index) => _reader.GetName(index);
+
+        public string[] getColumnNames()
+        {
+            string[] columnNames = new string[_reader.FieldCount];
+
+            for (int i = 0; i < _reader.FieldCount; i++)
+                columnNames[i] = _reader.GetName(i);
+
+            return columnNames;
+        }
+
+        public string getDatabase() => _databaseName;
+
+        public byte[] getBlob(int columnIndex) => _reader.GetFieldValue<byte[]>(columnIndex);
+
+        public int getCount()
+        {
+            int i = 0;
+            while (_reader.Read())
+                i++;
+
+            return i;
+        }
+
+        public double getDouble(int columnIndex) => _reader.GetFieldValue<double>(columnIndex);
+
+        public float getFloat(int columnIndex) => _reader.GetFieldValue<float>(columnIndex);
+
+        public int getInt(int columnIndex) => _reader.GetFieldValue<int>(columnIndex);
+
+        public long getLong(int columnIndex) => _reader.GetFieldValue<long>(columnIndex);
+
+        public short getShort(int columnIndex) => _reader.GetFieldValue<short>(columnIndex);
+
+        public string getString(int columnIndex) => _reader.GetFieldValue<string>(columnIndex);
+
+        public Type getType(int columnIndex) => _reader.GetFieldType(columnIndex);
+
+        public bool isAfterLast() => _reader.IsClosed || _reader.FieldCount <= 0 || position > _reader.FieldCount;
+
+        public bool isBeforeFirst() => _reader.IsClosed || _reader.FieldCount <= 0 || position < 0;
+
+        public bool isClosed() => _reader.IsClosed;
+
+        public bool isFirst() => position == 0;
+
+        public bool isLast() => position == _reader.FieldCount - 1;
+
+        public bool isNull(int columnIndex) => _reader.IsDBNull(columnIndex);
+
+        public void move(int offset) => position += offset;
+
+        public bool read() => !isClosed() && _reader.Read();
+    }
 
     public class SQLiteException : SqliteException
     {
         public int errorCode
         {
-            get
-            {
-                return errorCode;
-            }
+            get => errorCode;
             set
             {
                 ArgumentOutOfRangeException.ThrowIfLessThan(value, -1, nameof(value));
@@ -24,19 +162,21 @@ namespace database.sqlite
             }
         }
 
-        public string message { get; set; } = string.Empty;
+        public SQLiteOpenMode mode { get; set; } = SQLiteOpenMode.OPEN_READWRITE;
 
-        public SQLiteException(): base(string.Empty, -1)
+        public CharSequence message { get; set; } = CharSequence.empty;
+
+        public SQLiteException(): base(CharSequence.empty, -1)
         {
             Debug.WriteLine(StackTrace);
         }
-        public SQLiteException(string Message): base(Message, -1)
+        public SQLiteException(CharSequence Message): base(Message, -1)
         {
             message = Message;
 
             Debug.WriteLine(StackTrace);
         }
-        public SQLiteException(string Message, int ErrorCode) : base(Message, ErrorCode)
+        public SQLiteException(CharSequence Message, int ErrorCode) : base(Message, ErrorCode)
         {
             message = Message;
             errorCode = ErrorCode;
@@ -62,30 +202,77 @@ namespace database.sqlite
         public static void ThrowIfEquals(Versions versions)
         {
             if (versions.oldVersion == versions.newVersion)
-            {
                 throw new VersionException(versions);
-            }
+        }
+        public static void ThrowIfEquals(int oldVersion, int newVersion)
+        {
+            if (oldVersion == newVersion)
+                throw new VersionException(oldVersion, newVersion);
+        }
+        public static void ThrowIfNotEquals(Versions versions)
+        {
+            if (versions.oldVersion != versions.newVersion)
+                throw new VersionException(versions);
+        }
+        public static void ThrowIfNotEquals(int oldVersion, int newVersion)
+        {
+            if (oldVersion != newVersion)
+                throw new VersionException(oldVersion, newVersion);
         }
         public static void ThrowIfLess(Versions versions)
         {
             if (versions.oldVersion < versions.newVersion)
-            {
                 throw new VersionException(versions);
-            }
+        }
+        public static void ThrowIfLess(int oldVersion, int newVersion)
+        {
+            if (oldVersion < newVersion)
+                throw new VersionException(oldVersion, newVersion);
+        }
+        public static void ThrowIfLessOrEqual(Versions versions)
+        {
+            if (versions.oldVersion <= versions.newVersion)
+                throw new VersionException(versions);
+        }
+        public static void ThrowIfLessOrEqual(int oldVersion, int newVersion)
+        {
+            if (oldVersion <= newVersion)
+                throw new VersionException(oldVersion, newVersion);
         }
         public static void ThrowIfGreater(Versions versions)
         {
             if (versions.oldVersion > versions.newVersion)
-            {
                 throw new VersionException(versions);
-            }
+        }
+        public static void ThrowIfGreater(int oldVersion, int newVersion)
+        {
+            if (oldVersion > newVersion)
+                throw new VersionException(oldVersion, newVersion);
+        }
+        public static void ThrowIfGreaterOrEqual(Versions versions)
+        {
+            if (versions.oldVersion >= versions.newVersion)
+                throw new VersionException(versions);
+        }
+        public static void ThrowIfGreaterOrEqual(int oldVersion, int newVersion)
+        {
+            if (oldVersion >= newVersion)
+                throw new VersionException(oldVersion, newVersion);
         }
         public static void ThrowIfNegative(int version)
         {
             if (version < 0)
-            {
                 throw new VersionException(version);
-            }
+        }
+        public static void ThrowIfZero(int version)
+        {
+            if (version == 0)
+                throw new VersionException(version);
+        }
+        public static void ThrowIfNegativeOrZero(int version)
+        {
+            if (version <= 0)
+                throw new VersionException(version);
         }
     }
 
@@ -305,26 +492,29 @@ namespace database.sqlite
         }
     }
 
-    public class SQLiteHelper : SQLiteOpenHelper;
-
     public class SQLiteDatabase : IDisposable
     {
-        private int Version { get; set; } = 0;
-        private string Path { get; set; } = string.Empty;
-        private SqliteConnection _connection { get; set; }
-        private SqliteTransaction? _transaction { get; set; } = null;
-        private SqliteConnectionStringBuilder _connectionStringBuilder { get; set; }
 
-        private static readonly string[] separator = new[] { "AND", "OR" };
+        private static int _version { get; set; } = 0;
 
-        public SQLiteDatabase(string path)
+        private static readonly string[] _separators = ["AND", "OR"];
+        private SqliteTransaction? _transaction { get; set; } = null!;
+        private static SqliteConnection _connection { get; set; } = null!;
+        private static string _connectionString { get; set; } = string.Empty;
+
+        public SQLiteDatabase(CharSequence connectionString)
         {
-            Path = path;
-            SQLiteHelper helper = new();
-
+            _connectionString = connectionString;
+            _connection = new(connectionString);
         }
 
-        public void Dispose()
+        public SQLiteDatabase(CharSequence databaseName, CharSequence connectionString, int databaseVersion)
+        {
+            _connectionString = connectionString;
+            _connection = new(connectionString);
+        }
+
+        public void dispose()
         {
             try
             {
@@ -333,6 +523,8 @@ namespace database.sqlite
             }
             finally { }
         }
+
+        public void Dispose() => dispose();
 
         public void closeDatabase()
         {
@@ -364,7 +556,7 @@ namespace database.sqlite
                 return;
             }
 
-            string[] where = whereClause.Split(separator, StringSplitOptions.None).Select(x => x.Trim()).ToArray();
+            string[] where = whereClause.Split(_separators, StringSplitOptions.None).Select(x => x.Trim()).ToArray();
 
             if (whereArgs is not null)
             {
@@ -437,7 +629,7 @@ namespace database.sqlite
         /// Execute a <em>single</em> SQL statement that is <b>NOT</b> a SELECT/INSERT/UPDATE/DELETE.
         /// </summary>
         /// <param name="sql"></param>
-        /// <param name="bindArgs"><see cref="object"/>: только <see cref="string"/>, <see cref="int"/> и <see cref="double"/> допустимы</param>
+        /// <param name="bindArgs"><see cref="object"/>: С‚РѕР»СЊРєРѕ <see cref="string"/>, <see cref="int"/> Рё <see cref="double"/> РґРѕРїСѓСЃС‚РёРјС‹</param>
         /// <returns>Count of affected rows</returns>
         /// <exception cref="SQLiteException">if the SQL string is invalid</exception>
         public int execSQL(string sql, object[]? bindArgs)
@@ -470,7 +662,7 @@ namespace database.sqlite
         /// <returns>Path to the database</returns>
         public string getPath()
         {
-            return Path;
+            return _connectionString;
         }
 
         /// <summary>
@@ -479,7 +671,7 @@ namespace database.sqlite
         /// <returns>Database version</returns>
         public int getVersion()
         {
-            return Version;
+            return _version;
         }
 
         /// <summary>
@@ -488,7 +680,7 @@ namespace database.sqlite
         /// <param name="path"><see cref="string"/>: path to database</param>
         public void setPath(string path)
         {
-            Path = path;
+            _connectionString = path;
         }
 
         /// <summary>
@@ -498,7 +690,7 @@ namespace database.sqlite
         public void setVersion(int version)
         {
             VersionException.ThrowIfNegative(version);
-            Version = version;
+            _version = version;
         }
 
         /// <summary>
@@ -565,67 +757,218 @@ namespace database.sqlite
 
         public bool needUpgrade(int newVersion)
         {
-            return newVersion > Version;
+            return newVersion > _version;
         }
 
-        public SQLiteDatabase openDatabase()
+        public SQLiteDatabase openDatabase(SQLiteOpenMode mode)
         {
+            string connStr = _connectionString + (mode is SQLiteOpenMode.OPEN_READONLY ? "; Mode=ReadOnly" : mode is SQLiteOpenMode.OPEN_READWRITE or SQLiteOpenMode.OPEN_READWRITECREATE ? "; Mode=ReadWrite" : CharSequence.empty);
+            _connection = new(connStr);
             _connection.Open();
             return this;
         }
 
-        public SQLiteDatabase openOrCreateDatabase(string path)
+        public SQLiteDatabase openOrCreateDatabase(string path, SQLiteOpenMode mode)
         {
             if (!Directory.Exists(path))
             {
                 Directory.CreateDirectory(path);
             }
-            return openDatabase();
+            return openDatabase(mode);
         }
 
-        public DataTable query
+        public Cursor query
         (
             string table,
             string[] columns,
-            string selection,
-            string[] selectionArgs,
-            string groupBy,
-            string having,
-            string orderBy
+            string? selection,
+            string[]? selectionArgs,
+            string? groupBy,
+            string? having,
+            string? orderBy
         )
         {
-            return null;
+            if (selection is not null)
+            {
+                string[] arr = selection.Split(["AND", "OR"], StringSplitOptions.RemoveEmptyEntries);
+
+                for (int i = 0; i < arr.Length; i++)
+                    if (selectionArgs is not null)
+                        arr[i] = arr[i].Replace("?", selectionArgs[i]);
+
+                string selectionChanged = string.Join(string.Empty, arr);
+
+                string sql =
+                 $@"SELECT {(columns.Length == 1 && columns[0] == "*" ? columns[0] : string.Join(", ", columns))}
+                    FROM {table}
+                    WHERE {selectionChanged}
+                    {(groupBy is null ? string.Empty : $" GROUP BY {groupBy}")}
+                    {(having is null ? string.Empty : $" HAVING {having}")}
+                    {(orderBy is null ? string.Empty : $" ORDER BY {orderBy}")}".Trim();
+
+                SqliteCommand com = new(sql, _connection);
+                return com.ExecuteReader();
+            }
+            else
+            {
+                string sql =
+                 $@"SELECT {(columns.Length == 1 && columns[0] == "*" ? columns[0] : string.Join(", ", columns))}
+                    FROM {table}
+                    {(groupBy is null ? string.Empty : $" GROUP BY {groupBy}")}
+                    {(having is null ? string.Empty : $" HAVING {having}")}
+                    {(orderBy is null ? string.Empty : $" ORDER BY {orderBy}")}".Trim();
+
+                SqliteCommand com = new(sql, _connection);
+                return com.ExecuteReader();
+            }
         }
 
-        public DataTable query
+        public Cursor query
         (
             string table,
             string[] columns,
-            string selection,
-            string[] selectionArgs,
-            string groupBy,
-            string having,
-            string orderBy,
-            string limit
+            string? selection,
+            string[]? selectionArgs,
+            string? groupBy,
+            string? having,
+            string? orderBy,
+            string? limit
         )
         {
-            return null;
+            if (selection is not null)
+            {
+                string[] arr = selection.Split(["AND", "OR"], StringSplitOptions.RemoveEmptyEntries);
+
+                for (int i = 0; i < arr.Length; i++)
+                    if (selectionArgs is not null)
+                        arr[i] = arr[i].Replace("?", selectionArgs[i]);
+
+                string selectionChanged = string.Join(string.Empty, arr);
+
+                string sql =
+                 $@"SELECT {(columns.Length == 1 && columns[0] == "*" ? columns[0] : string.Join(", ", columns))}
+                    FROM {table}
+                    WHERE {selectionChanged}
+                    {(groupBy is null ? string.Empty : $" GROUP BY {groupBy}")}
+                    {(having is null ? string.Empty : $" HAVING {having}")}
+                    {(orderBy is null ? string.Empty : $" ORDER BY {orderBy}")}
+                    {(limit is null ? string.Empty : $" LIMIT {limit}")}".Trim();
+
+                SqliteCommand com = new(sql, _connection);
+                return com.ExecuteReader();
+            }
+            else
+            {
+                string sql =
+                 $@"SELECT {(columns.Length == 1 && columns[0] == "*" ? columns[0] : string.Join(", ", columns))}
+                    FROM {table}
+                    {(groupBy is null ? string.Empty : $" GROUP BY {groupBy}")}
+                    {(having is null ? string.Empty : $" HAVING {having}")}
+                    {(orderBy is null ? string.Empty : $" ORDER BY {orderBy}")}
+                    {(limit is null ? string.Empty : $" LIMIT {limit}")}".Trim();
+
+                SqliteCommand com = new(sql, _connection);
+                return com.ExecuteReader();
+            }
         }
 
-        public DataTable query
+        public Cursor query
         (
             bool distinct,
             string table,
             string[] columns,
-            string selection,
-            string[] selectionArgs,
-            string groupBy,
-            string having,
-            string orderBy,
-            string limit
+            string? selection,
+            string[]? selectionArgs,
+            string? groupBy,
+            string? having,
+            string? orderBy
         )
         {
-            return null;
+            if (selection is not null)
+            {
+                string[] arr = selection.Split(["AND", "OR"], StringSplitOptions.RemoveEmptyEntries);
+
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    arr[i] = arr[i].Replace("?", selectionArgs[i]);
+                }
+
+                string selectionChanged = string.Join(string.Empty, arr);
+
+                string sql =
+                 $@"SELECT{(distinct ? " DISTINCT" : string.Empty)} {(columns.Length == 1 && columns[0] == "*" ? columns[0] : string.Join(", ", columns))}
+                    FROM {table}
+                    WHERE {selectionChanged}
+                    {(groupBy is null ? string.Empty : $" GROUP BY {groupBy}")}
+                    {(having is null ? string.Empty : $" HAVING {having}")}
+                    {(orderBy is null ? string.Empty : $" ORDER BY {orderBy}")}".Trim();
+
+                SqliteCommand com = new(sql, _connection);
+                return com.ExecuteReader();
+            }
+            else
+            {
+                string sql =
+                 $@"SELECT{(distinct ? " DISTINCT" : string.Empty)} {(columns.Length == 1 && columns[0] == "*" ? columns[0] : string.Join(", ", columns))}
+                    FROM {table}
+                    {(groupBy is null ? string.Empty : $" GROUP BY {groupBy}")}
+                    {(having is null ? string.Empty : $" HAVING {having}")}
+                    {(orderBy is null ? string.Empty : $" ORDER BY {orderBy}")}".Trim();
+
+                SqliteCommand com = new(sql, _connection);
+                return com.ExecuteReader();
+            }
+        }
+
+        public Cursor query
+        (
+            bool distinct,
+            string table,
+            string[] columns,
+            string? selection,
+            string[]? selectionArgs,
+            string? groupBy,
+            string? having,
+            string? orderBy,
+            string? limit
+        )
+        {
+            if (selection is not null)
+            {
+                string[] arr = selection.Split(["AND", "OR"], StringSplitOptions.RemoveEmptyEntries);
+
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    arr[i] = arr[i].Replace("?", selectionArgs[i]);
+                }
+
+                string selectionChanged = string.Join(string.Empty, arr);
+
+                string sql =
+                 $@"SELECT{(distinct ? " DISTINCT" : string.Empty)} {(columns.Length == 1 && columns[0] == "*" ? columns[0] : string.Join(", ", columns))}
+                    FROM {table}
+                    WHERE {selectionChanged}
+                    {(groupBy is null ? string.Empty : $" GROUP BY {groupBy}")}
+                    {(having is null ? string.Empty : $" HAVING {having}")}
+                    {(orderBy is null ? string.Empty : $" ORDER BY {orderBy}")}
+                    {(limit is null ? string.Empty : $" LIMIT {limit}")}".Trim();
+
+                SqliteCommand com = new(sql, _connection);
+                return com.ExecuteReader();
+            }
+            else
+            {
+                string sql =
+                 $@"SELECT{(distinct ? " DISTINCT" : string.Empty)} {(columns.Length == 1 && columns[0] == "*" ? columns[0] : string.Join(", ", columns))}
+                    FROM {table}
+                    {(groupBy is null ? string.Empty : $" GROUP BY {groupBy}")}
+                    {(having is null ? string.Empty : $" HAVING {having}")}
+                    {(orderBy is null ? string.Empty : $" ORDER BY {orderBy}")}
+                    {(limit is null ? string.Empty : $" LIMIT {limit}")}".Trim();
+
+                SqliteCommand com = new(sql, _connection);
+                return com.ExecuteReader();
+            }
         }
 
         /// <summary>
@@ -648,7 +991,7 @@ namespace database.sqlite
                 }
             }
 
-            string[] where = sql.Split(separator, StringSplitOptions.None).Select(x => x.Trim()).ToArray();
+            string[] where = sql.Split(_separators, StringSplitOptions.None).Select(x => x.Trim()).ToArray();
             
             if (where.Length != selectionArgs.Length)
             {
